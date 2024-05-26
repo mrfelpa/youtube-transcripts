@@ -4,63 +4,64 @@ import youtube_transcript_api
 from youtube_transcript_api import YouTubeTranscriptApi
 from pytube import YouTube, Channel
 import re
+import argparse
 
-conn = None
-try:
-    conn = sqlite3.connect('mc_transcripts.db')
-    print("db connection ok")
-except Error as e:
-    print (e)
+def process_video(url, conn):
+    yt = YouTube(url)
+    print(f"Processing video: {url}")
 
-### Configure channel from where it will collect all transcriptions
-channel = 'UCN_h_1w3ofp1qMgrwcnaykw'
-c = Channel('https://www.youtube.com/channel/'+channel)
+    if not yt.caption_tracks:
+        print(f"Video {url} has no captions")
+        return
 
-for url in c.video_urls:
-    yt = YouTube(url)
-    print(url)
-    if not yt.caption_tracks:
-        print("Video %s sem caption" % (url))
-        continue
 
-    ## Configure to get langs
-    if yt.caption_tracks[0].code == 'a.pt':
-        lang_code = 'pt'
-    elif yt.caption_tracks[0].code == 'a.en':
-        lang_code = 'en'
-    else:
-        print("Video %s caption found, but not pt or en" % (url))
-        continue
-    processed = conn.execute("select count(url) from processed where url='"+str(url)+"'")
-    for row in processed:
-        if row[0] == 0:
-            try:
-                transcript_list = YouTubeTranscriptApi.list_transcripts(yt.video_id)
-                if (transcript_list != None):
-                    transcript = YouTubeTranscriptApi.get_transcript(yt.video_id, languages=[lang_code])
+    lang_code = 'pt'
+    if yt.caption_tracks[0].code == 'a.en':
+        lang_code = 'en'
+    else:
+        print(f"Video {url} has captions, but not in pt or en")
+        return
 
-                    for line in transcript:
-                        print (line)
-                        print (yt.title)
-                        print (line["text"])
-                        print (line["start"])
-                        url_time = url + "&t="+str(int(line["start"]))
-                        print (url_time)
-                        try:
-                            conn.execute("insert into transcripts (title, url, description) values ('" + re.sub('[\'\"!@#$&]+','',str(line["text"])) + "','" + str(url_time) + "','" + re.sub('[\'\"!@#$&]+','',str(yt.title)) +"')")
-                        except Error as e:
-                            print(e)
-                    try:
-                        conn.execute("insert into processed (url) values ('"+str(url)+"')") 
-                    except Error as e:
-                        print(e)
-                    conn.commit()
+    processed = conn.execute("SELECT COUNT(url) FROM processed WHERE url=?", (url,))
+    if processed.fetchone()[0] == 0:
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(yt.video_id)
+            if transcript_list:
+                transcript = YouTubeTranscriptApi.get_transcript(yt.video_id, languages=[lang_code])
 
-            except Error as e:
-                print(e)
-        else:
-            print("video %s already processed" % (url))
-print ("Records created successfully")
-conn.close()
+                for line in transcript:
+                    text = re.sub(r"[\'\"!@#$&]+", '', line["text"])
+                    url_time = f"{url}&t={int(line['start'])}"
+                    conn.execute("INSERT INTO transcripts (title, url, description) VALUES (?, ?, ?)", (text, url_time, yt.title))
 
-quit()
+                conn.execute("INSERT INTO processed (url) VALUES (?)", (url,))
+                conn.commit()
+        except Error as e:
+            print(f"Error processing video {url}: {e}")
+    else:
+        print(f"Video {url} already processed")
+
+def main():
+    parser = argparse.ArgumentParser(description='YouTube Transcript Downloader')
+    parser.add_argument('channel', help='YouTube channel ID')
+    parser.add_argument('--db', default='mc_transcripts.db', help='SQLite database file')
+    args = parser.parse_args()
+
+    try:
+        conn = sqlite3.connect(args.db)
+        print("Database connection established")
+
+        c = Channel(f'https://www.youtube.com/channel/{args.channel}')
+        for url in c.video_urls:
+            process_video(url, conn)
+
+        print("Records created successfully")
+    except Error as e:
+        print(f"Error: {e}")
+    finally:
+        if conn:
+            conn.close()
+            print("Database connection closed")
+
+if __name__ == "__main__":
+    main()
